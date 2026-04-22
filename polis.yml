@@ -1,0 +1,78 @@
+# Ory Polis — Docker Compose service definition
+# Reference: https://www.ory.com/docs/polis
+#
+# Polis bridges SAML (for GitLab) ↔ OIDC (Ory Hydra).
+# All secrets must come from environment variables — never hardcode them here.
+
+version: "3.8"
+
+services:
+  polis:
+    build:
+      context: ./polis
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "5225:5225"
+    environment:
+      # ── Database ───────────────────────────────────────────────────────────
+      DB_ENGINE: pg
+      DB_URL: ${POLIS_DB_URL}                   # postgresql://user:pass@host:5432/polis
+
+      # ── Service identity ───────────────────────────────────────────────────
+      # EXTERNAL_URL is the public base URL Polis is reachable at.
+      # Must be HTTPS in production. Used to build SAML IdP metadata URLs.
+      EXTERNAL_URL: ${POLIS_EXTERNAL_URL}        # https://polis.yourdomain.com
+      NEXTAUTH_URL: ${POLIS_EXTERNAL_URL}
+      NEXTAUTH_SECRET: ${POLIS_NEXTAUTH_SECRET}  # openssl rand -hex 32
+
+      # ── Admin API ─────────────────────────────────────────────────────────
+      # Comma-separated list of API keys for Polis admin endpoints.
+      # Used to register SAML connections and OIDC connections via the API.
+      JACKSON_API_KEYS: ${POLIS_API_KEYS}        # openssl rand -hex 32
+
+      # ── SAML IdP signing keys ─────────────────────────────────────────────
+      # Polis signs SAML assertions it issues to GitLab with these keys.
+      # Generate with: openssl req -x509 -newkey rsa:2048 ...
+      # Store newlines as '|' — Polis reassembles them internally.
+      PRIVATE_KEY: ${POLIS_SAML_PRIVATE_KEY}     # -----BEGIN PRIVATE KEY-----|...|-----END PRIVATE KEY-----|
+      PUBLIC_KEY: ${POLIS_SAML_PUBLIC_KEY}        # -----BEGIN CERTIFICATE-----|...|-----END CERTIFICATE-----|
+
+      # ── IdP mode (Polis acts as IdP toward GitLab) ────────────────────────
+      IDP_ENABLED: "true"
+
+      # ── OIDC upstream: Ory Hydra ──────────────────────────────────────────
+      # These are used when Polis initiates an OIDC flow against Hydra.
+      # The client must be pre-registered in Hydra (see Step 2 in the guide).
+      OIDC_CLIENT_ID: ${POLIS_HYDRA_CLIENT_ID}           # polis-saml-bridge
+      OIDC_CLIENT_SECRET: ${POLIS_HYDRA_CLIENT_SECRET}
+      OIDC_DISCOVERY_URL: ${HYDRA_ISSUER}/.well-known/openid-configuration
+      # HYDRA_ISSUER example: https://hydra.yourdomain.com
+      # or via gateway:       https://gateway.yourdomain.com/hydra
+
+      # ── SSO / session ─────────────────────────────────────────────────────
+      # When Polis redirects to Hydra and a Kratos session already exists,
+      # your IAM app's /api/consent handler should auto-accept the consent
+      # challenge — this is what makes SSO transparent (no re-login prompt).
+      # See Step 5 in the guide for the IAM app consent handler pattern.
+
+      # ── Optional: SMTP for notifications ─────────────────────────────────
+      SMTP_HOST: ${SMTP_HOST:-""}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-""}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-""}
+      SMTP_FROM: ${SMTP_FROM:-""}
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5225/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    labels:
+      # Example Traefik labels — adapt to your gateway (nginx, Railway, etc.)
+      traefik.enable: "true"
+      traefik.http.routers.polis.rule: "Host(`polis.yourdomain.com`)"
+      traefik.http.routers.polis.tls: "true"
+      traefik.http.services.polis.loadbalancer.server.port: "5225"
