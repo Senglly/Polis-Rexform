@@ -1,3 +1,3 @@
-FROM ghcr.io/ory/polis:latest
+FROM boxyhq/jackson:latest
 
 EXPOSE 5225
